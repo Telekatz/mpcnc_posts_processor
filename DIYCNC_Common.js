@@ -18,12 +18,17 @@ properties = {
 
   jobSetOriginOnStart: true,           // Set origin when gcode start (G92)
   jobGoOriginOnFinish: true,           // Go X0 Y0 Z0 at gcode end
+  jobGoParkOnFinish: false,           // Go park position at gcode end
 
   jobSequenceNumbers: false,           // show sequence numbers
   jobSequenceNumberStart: 10,          // first sequence number
   jobSequenceNumberIncrement: 1,       // increment for sequence numbers
   jobSeparateWordsWithSpace: true,     // specifies that the words should be separated with a white space  
 
+  parkPositionX: 0,                   // X position for builtin tool change
+  parkPositionY: 0,                   // Y position for builtin tool change
+  parkPositionZ: 100,                  // Z position for builtin tool change
+  
   toolChangeEnabled: true,          // Enable tool change code (bultin tool change requires LCD display)
   toolChangeX: 0,                   // X position for builtin tool change
   toolChangeY: 0,                   // Y position for builtin tool change
@@ -98,7 +103,11 @@ propertyDefinitions = {
     title: "Job: Goto 0 at end", description: "Go X0 Y0 at gcode end", group: 1,
     type: "boolean", default_mm: true, default_in: true
   },
-
+  jobGoParkOnFinish: {
+    title: "Job: Goto park position at end", description: "Go park position at gcode end", group: 1,
+    type: "boolean", default_mm: false, default_in: false
+  },
+  
   jobSequenceNumbers: {
     title: "Job: Line numbers", description: "Show sequence numbers", group: 1,
     type: "boolean", default_mm: true, default_in: true
@@ -123,7 +132,20 @@ propertyDefinitions = {
     title: "Job: Duet: Laser mode", description: "GCode command to setup Duet3d laser mode", group: 1, type: "string",
     default_mm: "M452 P2 I0 R255 F200", default_in: "M452 P2 I0 R255 F200"
   },
-
+  
+  parkPositionX: {
+    title: "Park: X", description: "X position for park", group: 2,
+    type: "spatial", default_mm: 0, default_in: 0
+  },
+  parkPositionY: {
+    title: "Park: Y", description: "Y position for park", group: 2,
+    type: "spatial", default_mm: 0, default_in: 0
+  },
+  parkPositionZ: {
+    title: "Park: Z ", description: "Z position for park", group: 2,
+    type: "spatial", default_mm: 100, default_in: 4
+  },
+  
   toolChangeEnabled: {
     title: "Change: Enabled", description: "Enable tool change code (bultin tool change requires LCD display)", group: 2,
     type: "boolean", default_mm: true, default_in: true
@@ -395,10 +417,12 @@ function onClose() {
   currentFirmware.flushMotions();
   if (properties.gcodeStopFile == "") {
     onCommand(COMMAND_COOLANT_OFF);
-    if (properties.jobGoOriginOnFinish) {
+    onCommand(COMMAND_STOP_SPINDLE);
+    if (properties.jobGoParkOnFinish) {
+      rapidMovements(propertyMmToUnit(properties.parkPositionX), propertyMmToUnit(properties.parkPositionY), propertyMmToUnit(properties.parkPositionZ));
+    } else if (properties.jobGoOriginOnFinish) {
       rapidMovementsXY(0, 0);
     }
-    onCommand(COMMAND_STOP_SPINDLE);
     currentFirmware.end();
     writeActivityComment(" *** STOP end ***");
   } else {
@@ -418,7 +442,9 @@ function onSection() {
   writeActivityComment(" *** SECTION begin ***");
 
   // Tool change
-  if (properties.toolChangeEnabled && !isFirstSection() && tool.number != getPreviousSection().getTool().number) {
+  //if (properties.toolChangeEnabled && !isFirstSection() && tool.number != getPreviousSection().getTool().number) {
+  if (currentSection.getForceToolChange && currentSection.getForceToolChange() ||
+      (properties.toolChangeEnabled && !isFirstSection() && tool.number != getPreviousSection().getTool().number)) {  
     if (properties.gcodeToolFile == "") {
       // Builtin tool change gcode
       writeActivityComment(" --- CHANGE TOOL begin ---");
@@ -685,6 +711,10 @@ function onCommand(command) {
         return;
       currentFirmware.probeTool();
       return;
+    case COMMAND_CLEAN:
+      currentFirmware.cleaningCycle();
+      return;
+    
   }
 }
 
@@ -1036,6 +1066,7 @@ Firmware3dPrinterLike.prototype.toolChange = function () {
     writeBlock(mFormat.format(17), 'Z'); // Disable steppers timeout
   }
   // Ask tool change and wait user to touch lcd button
+  writeBlock(mFormat.format(117), "Tool " + tool.number + " " + tool.comment);
   this.askUser("Tool " + tool.number + " " + tool.comment, "Tool change", true);
 
   // Run Z probe gcode
@@ -1043,6 +1074,26 @@ Firmware3dPrinterLike.prototype.toolChange = function () {
     onCommand(COMMAND_TOOL_MEASURE);
   }
 }
+
+Firmware3dPrinterLike.prototype.cleaningCycle = function () {
+  this.flushMotions();
+  // turn off spindle and coolant
+  onCommand(COMMAND_COOLANT_OFF);
+  onCommand(COMMAND_STOP_SPINDLE);
+  if (!properties.jobManualSpindlePowerControl) {
+    // Beep
+    writeBlock(mFormat.format(300), sFormat.format(400), pFormat.format(2000));
+  }  
+  // Go to park position
+  onRapid(propertyMmToUnit(properties.parkPositionX), propertyMmToUnit(properties.parkPositionY), propertyMmToUnit(properties.parkPositionZ));
+  currentFirmware.flushMotions();
+
+  // Ask cleaning and wait user to touch lcd button
+  writeBlock(mFormat.format(117), "Clean Part ");
+  this.askUser("Clean Part ", "Clean Part", true);
+
+}
+
 Firmware3dPrinterLike.prototype.probeTool = function () {
   this.askUser("Attach ZProbe", "Probe", false);
   // refer http://marlinfw.org/docs/gcode/G038.html
